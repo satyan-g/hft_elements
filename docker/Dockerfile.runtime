@@ -1,0 +1,19 @@
+# Runtime image (minimal)
+FROM ubuntu:22.04
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libnuma1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy binaries from build stage
+# (Use multi-stage build in practice)
+COPY dbn_simulator /usr/local/bin/
+COPY mbl_server /usr/local/bin/
+COPY mbl_collector /usr/local/bin/
+
+# Expose ports
+EXPOSE 9550 9551
+
+CMD ["/bin/bash"]
+

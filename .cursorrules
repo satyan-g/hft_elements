@@ -1,0 +1,429 @@
+# HFT Elements - Implementation Guidelines
+
+## Project Context
+This is a high-frequency trading (HFT) system for converting Market-By-Order (MBO) feeds to Market-By-Level (MBL) feeds. Performance is critical - every nanosecond matters. The system must process 1M+ events/sec with P95 latency < 5µs.
+
+## Core Principles
+
+### 1. Type Safety - NO PRIMITIVE TYPES
+**ALWAYS use type aliases from `hft_elements/common/types.h`**
+
+❌ **FORBIDDEN:**
+```cpp
+void process_order(uint32_t price, uint32_t qty, uint64_t order_id);
+float calculate_midpoint(float bid, float ask);
+int64_t timestamp = get_time();
+```
+
+✅ **REQUIRED:**
+```cpp
+void process_order(Price price, Quantity qty, OrderId order_id);
+Price calculate_midpoint(Price bid, Price ask);
+Timestamp timestamp = RdtscTimer::now();
+```
+
+**Rationale:** Strong types prevent bugs (e.g., passing quantity where price is expected). The compiler catches type mismatches at compile time.
+
+### 2. Cache-Line Alignment - Prevent False Sharing
+**ALWAYS align hot-path structures to 64 bytes**
+
+❌ **FORBIDDEN:**
+```cpp
+struct PriceLevel {
+    uint32_t price;
+    uint32_t quantity;
+};
+
+class OrderBook {
+    std::atomic<uint64_t> seq;  // May share cache line with other data
+    uint64_t event_count;
+};
+```
+
+✅ **REQUIRED:**
+```cpp
+struct alignas(64) PriceLevel {
+    Price price;
+    Quantity quantity;
+    bool is_dirty;
+    uint8_t padding[55];  // Pad to 64 bytes
+};
+
+class OrderBook {
+    alignas(64) std::atomic<uint64_t> seq;  // Own cache line
+    alignas(64) uint64_t event_count;       // Own cache line
+};
+
+static_assert(sizeof(PriceLevel) == 64, "Must be cache-line sized");
+```
+
+**Rationale:** False sharing causes cache-line ping-pong between cores, destroying performance. Each frequently-written atomic should have its own cache line.
+
+### 3. Lock-Free > Wait-Free > Mutex
+**Prefer lock-free data structures, NEVER use mutex in hot path**
+
+❌ **FORBIDDEN:**
+```cpp
+std::mutex mutex_;
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    update_book(event);
+}
+
+std::shared_mutex rw_lock_;
+```
+
+✅ **REQUIRED:**
+```cpp
+// Use SeqLock for single-writer, multiple-reader
+atomic_primitive::SeqLock lock_;
+{
+    atomic_primitive::SeqWriteGuard guard(lock_);
+    update_book(event);
+}
+
+// Or use atomic operations with proper memory ordering
+std::atomic<uint64_t> counter_;
+counter_.fetch_add(1, std::memory_order_relaxed);
+```
+
+**Rationale:** Mutexes involve kernel syscalls and context switches (100s of ns). Lock-free structures use atomic CPU instructions (single-digit ns).
+
+### 4. NO Virtual Functions - Zero Vtable Overhead
+**Use templates for polymorphism, NEVER virtual in hot path**
+
+❌ **FORBIDDEN:**
+```cpp
+class IBookManager {
+    virtual void process_event(const MboEvent& event) = 0;
+    virtual ~IBookManager() = default;
+};
+
+class BookManager : public IBookManager {
+    virtual void process_event(const MboEvent& event) override;
+};
+```
+
+✅ **REQUIRED:**
+```cpp
+// Use templates for compile-time polymorphism
+template<typename BookManagerT>
+class SnapshotGenerator {
+    BookManagerT& book_manager_;
+public:
+    void generate() {
+        book_manager_.process_event(event);  // Direct call, no vtable
+    }
+};
+
+// Or CRTP if inheritance needed
+template<typename Derived>
+class BookManagerBase {
+    void process_event(const MboEvent& event) {
+        static_cast<Derived*>(this)->process_event_impl(event);
+    }
+};
+```
+
+**Rationale:** Virtual calls require vtable lookup (indirect jump, cache miss, branch misprediction). Templates resolve at compile time.
+
+### 5. Memory Allocation - Pre-allocate, No Dynamic Allocation in Hot Path
+**Allocate once at initialization, reuse in hot path**
+
+❌ **FORBIDDEN:**
+```cpp
+void process_event() {
+    std::vector<PriceLevel> levels;  // Allocates on heap
+    levels.push_back(level);
+    
+    std::string json = build_json();  // Dynamic allocation
+}
+```
+
+✅ **REQUIRED:**
+```cpp
+class Processor {
+    // Pre-allocated at construction
+    std::array<PriceLevel, MAX_LEVELS> levels_;
+    std::array<char, MAX_JSON_SIZE> json_buffer_;
+    
+    void process_event() {
+        // Use pre-allocated buffers, no allocation
+        size_t count = fill_levels(levels_);
+        build_json_into(json_buffer_);
+    }
+};
+```
+
+**Rationale:** malloc/free are slow (syscalls, lock contention). Pre-allocation eliminates this overhead.
+
+### 6. NUMA Awareness - Pin Threads, Allocate Local Memory
+**Always pin worker threads to CPU cores**
+
+❌ **FORBIDDEN:**
+```cpp
+std::thread worker([&]() {
+    // Thread can migrate across NUMA nodes
+    process_events();
+});
+```
+
+✅ **REQUIRED:**
+```cpp
+std::thread worker([&]() {
+    // Pin to specific CPU core
+    CpuUtils::pin_to_core(core_id);
+    
+    // Allocate on local NUMA node
+    int numa_node = CpuUtils::get_numa_node(core_id);
+    void* buffer = CpuUtils::numa_alloc(size, numa_node);
+    
+    process_events();
+});
+```
+
+**Rationale:** Cross-NUMA memory access is 2-3x slower than local. Thread migration causes cache invalidation.
+
+### 7. Memory Ordering - Use Weakest Sufficient Ordering
+**Don't use seq_cst by default, choose appropriate ordering**
+
+❌ **FORBIDDEN:**
+```cpp
+// seq_cst is expensive (full memory barrier)
+counter_.fetch_add(1);  // Defaults to seq_cst
+flag_.store(true);      // Defaults to seq_cst
+```
+
+✅ **REQUIRED:**
+```cpp
+// Use relaxed for counters (no ordering needed)
+counter_.fetch_add(1, std::memory_order_relaxed);
+
+// Use acquire/release for synchronization
+flag_.store(true, std::memory_order_release);
+if (flag_.load(std::memory_order_acquire)) { ... }
+```
+
+**Rationale:** seq_cst emits expensive memory fences. Relaxed/acquire/release are faster and sufficient for most cases.
+
+### 8. Inlining - Help the Compiler
+**Mark hot-path functions inline or use templates**
+
+❌ **FORBIDDEN:**
+```cpp
+// In .cpp file, won't be inlined
+Price get_best_bid() {
+    return bid_levels_[0].price;
+}
+```
+
+✅ **REQUIRED:**
+```cpp
+// In header, compiler can inline
+inline Price get_best_bid() const noexcept {
+    return bid_levels_[0].price;
+}
+
+// Or force inline for critical functions
+[[gnu::always_inline]] inline Price get_best_bid() const noexcept {
+    return bid_levels_[0].price;
+}
+```
+
+**Rationale:** Function call overhead (push/pop stack frame) is significant at nanosecond scale. Inlining eliminates this.
+
+### 9. Branch Prediction - Help the CPU
+**Use likely/unlikely hints for predictable branches**
+
+❌ **FORBIDDEN:**
+```cpp
+if (error_condition) {  // Rarely true, but CPU doesn't know
+    handle_error();
+}
+
+if (likely_condition) {  // Usually true
+    fast_path();
+} else {
+    slow_path();
+}
+```
+
+✅ **REQUIRED:**
+```cpp
+if (__builtin_expect(error_condition, 0)) {  // Tell CPU: unlikely
+    handle_error();
+}
+
+if (__builtin_expect(likely_condition, 1)) {  // Tell CPU: likely
+    fast_path();
+} else {
+    slow_path();
+}
+
+// Or use macros
+#define LIKELY(x)   __builtin_expect(!!(x), 1)
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+
+if (UNLIKELY(error_condition)) { ... }
+```
+
+**Rationale:** Branch mispredictions cause pipeline stalls (10-20 cycles). Hints improve prediction accuracy.
+
+### 10. Data Structure Layout - Cache-Friendly Access Patterns
+**Arrange data for sequential access, not random**
+
+❌ **FORBIDDEN:**
+```cpp
+// Array of pointers (cache-unfriendly)
+std::vector<Order*> orders;
+for (auto* order : orders) {
+    process(order);  // Each access is a cache miss
+}
+
+// Data scattered in map
+std::map<OrderId, Order> orders;  // Tree nodes scattered in memory
+```
+
+✅ **REQUIRED:**
+```cpp
+// Array of values (cache-friendly)
+std::array<Order, MAX_ORDERS> orders;
+for (const auto& order : orders) {
+    process(order);  // Sequential access, prefetcher works
+}
+
+// Flat hash map (better cache locality)
+std::unordered_map<OrderId, Order> orders;
+orders.reserve(expected_size);  // Pre-allocate
+```
+
+**Rationale:** Modern CPUs prefetch sequential data. Random access (pointers, trees) defeats prefetching.
+
+### 11. Avoid Unnecessary Copies - Use References and std::move
+**Pass by const reference, move when possible**
+
+❌ **FORBIDDEN:**
+```cpp
+void process_event(MboEvent event) {  // Copies 64 bytes
+    // ...
+}
+
+std::string json = builder.build();
+send(json);  // Copies string
+```
+
+✅ **REQUIRED:**
+```cpp
+void process_event(const MboEvent& event) noexcept {  // No copy
+    // ...
+}
+
+std::string json = builder.build();
+send(std::move(json));  // Move, no copy
+```
+
+**Rationale:** Copying data is expensive. References and moves eliminate copies.
+
+### 12. Compiler Optimization Hints
+**Use noexcept, const, constexpr where possible**
+
+❌ **FORBIDDEN:**
+```cpp
+Price calculate_midpoint(Price bid, Price ask) {
+    return (bid + ask) / 2;
+}
+```
+
+✅ **REQUIRED:**
+```cpp
+constexpr Price calculate_midpoint(Price bid, Price ask) noexcept {
+    return (bid + ask) / 2;
+}
+```
+
+**Rationale:** noexcept allows better optimization (no exception handling code). constexpr enables compile-time evaluation. const allows caching.
+
+### 13. Static Linking Only - No Dynamic Libraries
+**All libraries must be static (.a), not shared (.so)**
+
+❌ **FORBIDDEN:**
+```cmake
+add_library(hft_common SHARED ${SOURCES})
+```
+
+✅ **REQUIRED:**
+```cmake
+add_library(hft_common STATIC ${SOURCES})
+```
+
+**Rationale:** Dynamic linking adds PLT/GOT indirection overhead. Static linking enables whole-program optimization.
+
+### 14. Measure, Don't Guess - Use Metrics
+**Always add metrics for hot paths**
+
+❌ **FORBIDDEN:**
+```cpp
+void process_event(const MboEvent& event) {
+    update_book(event);
+}
+```
+
+✅ **REQUIRED:**
+```cpp
+void process_event(const MboEvent& event) {
+    auto start = RdtscTimer::now();
+    
+    update_book(event);
+    
+    auto elapsed = RdtscTimer::now() - start;
+    latency_histogram_.record(RdtscTimer::cycles_to_ns(elapsed));
+}
+```
+
+**Rationale:** You can't optimize what you don't measure. Metrics identify bottlenecks.
+
+## Code Review Checklist
+
+Before submitting code, verify:
+
+- [ ] No primitive types (uint32_t, float, etc.) in function signatures
+- [ ] All hot-path structures are 64-byte aligned
+- [ ] No mutex/lock_guard in hot path
+- [ ] No virtual functions in hot path
+- [ ] No dynamic allocation (new/malloc) in hot path
+- [ ] Worker threads are CPU-pinned
+- [ ] Atomic operations use appropriate memory ordering (not seq_cst by default)
+- [ ] Hot functions are inline or template
+- [ ] Branch hints (likely/unlikely) on predictable branches
+- [ ] Data structures use sequential access patterns
+- [ ] Pass by const reference, use std::move
+- [ ] Functions marked noexcept where appropriate
+- [ ] Metrics added for critical paths
+- [ ] Static assertions for size assumptions (static_assert)
+
+## Common Pitfalls to Avoid
+
+1. **std::string in hot path** → Use fixed buffers or string_view
+2. **std::cout/printf in hot path** → Use async logging
+3. **std::chrono for timing** → Use RDTSC (nanosecond precision)
+4. **std::vector.push_back in loop** → Pre-allocate with reserve()
+5. **Passing structs by value** → Pass by const reference
+6. **Default-constructed atomics** → Specify memory ordering explicitly
+7. **Unaligned data access** → Use alignas() for proper alignment
+8. **Mixing hot and cold data in same cache line** → Separate with alignas(64)
+
+## When in Doubt
+
+1. Check if similar code exists in the codebase - follow that pattern
+2. Benchmark before and after changes - measure impact
+3. Use perf tools to identify bottlenecks (perf stat, perf record)
+4. Consult docs/PLAN.md and docs/ARCHITECTURE.md for design decisions
+
+## References
+
+- `include/hft_elements/common/types.h` - Type definitions
+- `include/hft_elements/common/atomic_primitive.h` - SeqLock pattern
+- `docs/ARCHITECTURE.md` - System architecture and threading model
+- `docs/PLAN.md` - Implementation plan and design principles
+- `docs/QUICKREF.md` - Quick reference cheat sheet
+

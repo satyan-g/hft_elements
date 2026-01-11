@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  simulator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.runtime
+    ports:
+      - "9550:9550"
+    volumes:
+      - ../data:/data:ro
+    command: >
+      dbn_simulator
+      --file /data/sample.dbn
+      --port 9550
+      --rate 100000
+    networks:
+      - hft_net
+
+  mbl_server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.runtime
+    ports:
+      - "9551:9551"
+    depends_on:
+      - simulator
+    command: >
+      mbl_server
+      --mbo-host simulator
+      --mbo-port 9550
+      --snapshot-port 9551
+    networks:
+      - hft_net
+
+  collector:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.runtime
+    volumes:
+      - ../output:/output
+    depends_on:
+      - mbl_server
+    command: >
+      mbl_collector
+      --host mbl_server
+      --port 9551
+      --output /output
+    networks:
+      - hft_net
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9552:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - hft_net
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "9553:3000"
+    depends_on:
+      - prometheus
+    volumes:
+      - ../grafana:/etc/grafana/provisioning:ro
+    networks:
+      - hft_net
+
+networks:
+  hft_net:
+    driver: bridge
+
