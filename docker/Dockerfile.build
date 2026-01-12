@@ -1,24 +1,36 @@
-# Build image for reproducible builds
+# Build image for reproducible builds with newer GCC
+# This is a development image - source and build happen in mounted volumes
+# Using Ubuntu 22.04 for glibc 2.35 compatibility
 FROM ubuntu:22.04
 
-# Install build dependencies
+# Install build dependencies with GCC 12 (latest in 22.04 default repos)
 RUN apt-get update && apt-get install -y \
-    build-essential \
+    gcc-12 \
+    g++-12 \
     cmake \
     git \
     libnuma-dev \
+    libssl-dev \
+    zlib1g-dev \
+    libzstd-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Set GCC 12 as default
+RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 120 \
+    --slave /usr/bin/g++ g++ /usr/bin/g++-12 \
+    --slave /usr/bin/gcov gcov /usr/bin/gcov-12
+
 # Set working directory
-WORKDIR /build
+WORKDIR /workspace
 
-# Copy source
-COPY . /build
+# Build environment info
+# - OS: Ubuntu 22.04 LTS (matches host)
+# - glibc: 2.35 (matches host)
+# - GCC: 12.3 (newer than host's 11.4)
+# - CMake: 3.22 (same as host)
+# - Static linking: libstdc++, libgcc
+# Result: Binaries work on host without runtime dependencies
 
-# Build
-RUN mkdir -p build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release .. && \
-    cmake --build . -j$(nproc)
-
-# Output binaries will be in /build/build/
+# No COPY or RUN - source and builds happen in mounted volumes
+# Usage: docker run --rm -v $(pwd):/workspace -w /workspace hft-build:latest bash -c "build command"
 

@@ -17,3 +17,4 @@ EXPOSE 9550 9551
 
 CMD ["/bin/bash"]
 
+

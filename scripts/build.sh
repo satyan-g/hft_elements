@@ -14,6 +14,7 @@ BUILD_TYPE="Release"
 CLEAN=0
 TESTS=0
 JOBS=$(nproc)
+USE_DOCKER=0
 
 # Parse arguments
 show_usage() {
@@ -27,14 +28,16 @@ Build types:
 Options:
     --clean                   - Clean build directory before building
     --tests                   - Build with tests enabled
+    --docker                  - Build using Docker (GCC 14 + CMake 3.28)
     -j, --jobs N              - Number of parallel jobs (default: $(nproc))
     -h, --help                - Show this help message
 
 Examples:
-    $0                        - Build release version
-    $0 debug                  - Build debug version
-    $0 release --clean        - Clean and build release
-    $0 debug --tests          - Build debug with tests
+    $0                        - Build release version locally
+    $0 debug                  - Build debug version locally
+    $0 release --clean        - Clean and build release locally
+    $0 release --docker       - Build release in Docker (GCC 14)
+    $0 debug --docker --clean - Clean and build debug in Docker
 EOF
 }
 
@@ -55,6 +58,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --tests)
             TESTS=1
+            shift
+            ;;
+        --docker)
+            USE_DOCKER=1
             shift
             ;;
         -j|--jobs)
@@ -83,48 +90,102 @@ BUILD_DIR="${PROJECT_ROOT}/build/${BUILD_TYPE,,}"
 echo -e "${GREEN}=== HFT Elements Build Script ===${NC}"
 echo -e "Build type: ${YELLOW}${BUILD_TYPE}${NC}"
 echo -e "Build directory: ${YELLOW}${BUILD_DIR}${NC}"
+echo -e "Docker build: ${YELLOW}$([ $USE_DOCKER -eq 1 ] && echo 'Yes (GCC 14)' || echo 'No (local)')${NC}"
 echo -e "Parallel jobs: ${YELLOW}${JOBS}${NC}"
 echo -e "Tests: ${YELLOW}$([ $TESTS -eq 1 ] && echo 'Enabled' || echo 'Disabled')${NC}"
 echo ""
 
-# Clean if requested
-if [ $CLEAN -eq 1 ]; then
-    echo -e "${YELLOW}Cleaning build directory...${NC}"
-    rm -rf "$BUILD_DIR"
+# Docker build
+if [ $USE_DOCKER -eq 1 ]; then
+    echo -e "${GREEN}Building with Docker...${NC}"
+    
+    # Build Docker image if it doesn't exist
+    if ! docker image inspect hft-build:latest >/dev/null 2>&1; then
+        echo -e "${YELLOW}Building Docker image (first time only)...${NC}"
+        docker build -f "${PROJECT_ROOT}/docker/Dockerfile.build" -t hft-build:latest "${PROJECT_ROOT}"
+    fi
+    
+    # Clean build directory if requested
+    if [ $CLEAN -eq 1 ]; then
+        echo -e "${YELLOW}Cleaning build directory...${NC}"
+        rm -rf "${BUILD_DIR}"
+    fi
+    
+    # Create build directory
+    mkdir -p "${BUILD_DIR}"
+    
+    # Build CMake arguments
+    CMAKE_ARGS="-DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DCMAKE_C_COMPILER=gcc-12 -DCMAKE_CXX_COMPILER=g++-12"
+    if [ $TESTS -eq 1 ]; then
+        CMAKE_ARGS="${CMAKE_ARGS} -DBUILD_TESTS=ON"
+    fi
+    
+    # Run build in Docker with mounted workspace
+    echo -e "${GREEN}Running build in Docker container...${NC}"
+    docker run --rm \
+        -v "${PROJECT_ROOT}:/workspace" \
+        -w /workspace \
+        -u "$(id -u):$(id -g)" \
+        hft-build:latest \
+        bash -c "mkdir -p build/${BUILD_TYPE,,} && cd build/${BUILD_TYPE,,} && \
+                 cmake ${CMAKE_ARGS} ../.. && \
+                 cmake --build . -j${JOBS}"
+    
+    echo ""
+    echo -e "${GREEN}=== Docker Build Complete ===${NC}"
+    echo -e "Binaries are in: ${YELLOW}${BUILD_DIR}${NC}"
+    echo -e "Built with: ${YELLOW}GCC 12 + CMake 3.22 (Ubuntu 22.04)${NC}"
+    echo -e "Static linking: ${YELLOW}libstdc++ and libgcc${NC}"
+    echo -e "glibc: ${YELLOW}2.35 (host compatible)${NC}"
+    echo ""
+    
+else
+    # Local build
+    # Clean if requested
+    if [ $CLEAN -eq 1 ]; then
+        echo -e "${YELLOW}Cleaning build directory...${NC}"
+        rm -rf "$BUILD_DIR"
+    fi
+
+    # Create build directory
+    mkdir -p "$BUILD_DIR"
+    cd "$BUILD_DIR"
+
+    # Configure with CMake
+    echo -e "${GREEN}Configuring with CMake...${NC}"
+    CMAKE_ARGS=(
+        -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+    )
+
+    if [ $TESTS -eq 1 ]; then
+        CMAKE_ARGS+=(-DBUILD_TESTS=ON)
+    fi
+
+    cmake "${CMAKE_ARGS[@]}" "$PROJECT_ROOT"
+
+    # Build
+    echo -e "${GREEN}Building...${NC}"
+    cmake --build . -j"$JOBS"
+
+    # Run tests if enabled
+    if [ $TESTS -eq 1 ]; then
+        echo -e "${GREEN}Running tests...${NC}"
+        ctest --output-on-failure
+    fi
+
+    echo ""
+    echo -e "${GREEN}=== Build Complete ===${NC}"
 fi
 
-# Create build directory
-mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
-
-# Configure with CMake
-echo -e "${GREEN}Configuring with CMake...${NC}"
-CMAKE_ARGS=(
-    -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
-)
-
-if [ $TESTS -eq 1 ]; then
-    CMAKE_ARGS+=(-DBUILD_TESTS=ON)
+# Show available utilities
+if [ -f "${BUILD_DIR}/examples/utilities/hft_host_diag/hft_host_diag" ]; then
+    echo -e "Utilities:"
+    echo -e "  - hft_host_diag: ${YELLOW}${BUILD_DIR}/examples/utilities/hft_host_diag/hft_host_diag${NC}"
 fi
 
-cmake "${CMAKE_ARGS[@]}" "$PROJECT_ROOT"
-
-# Build
-echo -e "${GREEN}Building...${NC}"
-cmake --build . -j"$JOBS"
-
-# Run tests if enabled
-if [ $TESTS -eq 1 ]; then
-    echo -e "${GREEN}Running tests...${NC}"
-    ctest --output-on-failure
+if [ -f "${BUILD_DIR}/examples/utilities/dbncat/dbncat" ]; then
+    echo -e "  - dbncat:        ${YELLOW}${BUILD_DIR}/examples/utilities/dbncat/dbncat${NC}"
 fi
 
 echo ""
-echo -e "${GREEN}=== Build Complete ===${NC}"
-echo -e "Binaries location:"
-echo -e "  - dbn_simulator: ${YELLOW}${BUILD_DIR}/src/simulator/dbn_simulator${NC}"
-echo -e "  - mbl_server:    ${YELLOW}${BUILD_DIR}/src/server/mbl_server${NC}"
-echo -e "  - mbl_collector: ${YELLOW}${BUILD_DIR}/src/collector/mbl_collector${NC}"
-echo ""
-echo -e "To run: ${YELLOW}./scripts/run.sh ${BUILD_TYPE,,}${NC}"
-
+echo -e "To run: ${YELLOW}./scripts/run.sh ${BUILD_TYPE,,} <component>${NC}"

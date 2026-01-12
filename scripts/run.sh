@@ -23,16 +23,16 @@ Build types:
     debug, release (default: release)
 
 Components:
-    simulator    - Run dbn_simulator
-    server       - Run mbl_server
-    collector    - Run mbl_collector
-    all          - Run all components in separate terminals
+    feed_simulator  - Run feed_simulator
+    book_server     - Run book_server
+    data_collector  - Run data_collector
+    all             - Run all components in separate terminals
 
 Examples:
-    $0 simulator --help
-    $0 release simulator --file data/sample.dbn --port 9550
-    $0 debug server --mbo-host localhost --mbo-port 9550
-    $0 collector --host localhost --port 9551 --output ./output
+    $0 feed_simulator --help
+    $0 release feed_simulator --file data/sample.dbn --port 9550
+    $0 debug book_server --mbo-host localhost --mbo-port 9550
+    $0 data_collector --host localhost --port 9551 --output ./output
     $0 all
 
 Component-specific arguments are passed through to the binary.
@@ -83,33 +83,33 @@ fi
 
 # Run component
 case $COMPONENT in
-    simulator)
-        BINARY="${BUILD_DIR}/src/simulator/dbn_simulator"
+    feed_simulator|simulator)
+        BINARY="${BUILD_DIR}/examples/mbo_to_mbl/feed_simulator/feed_simulator"
         if [ ! -f "$BINARY" ]; then
             echo -e "${RED}Error: Binary not found: ${BINARY}${NC}"
             exit 1
         fi
-        echo -e "${GREEN}Running dbn_simulator (${BUILD_TYPE})...${NC}"
+        echo -e "${GREEN}Running feed_simulator (${BUILD_TYPE})...${NC}"
         exec "$BINARY" "$@"
         ;;
     
-    server)
-        BINARY="${BUILD_DIR}/src/server/mbl_server"
+    book_server|server)
+        BINARY="${BUILD_DIR}/examples/mbo_to_mbl/book_server/book_server"
         if [ ! -f "$BINARY" ]; then
             echo -e "${RED}Error: Binary not found: ${BINARY}${NC}"
             exit 1
         fi
-        echo -e "${GREEN}Running mbl_server (${BUILD_TYPE})...${NC}"
+        echo -e "${GREEN}Running book_server (${BUILD_TYPE})...${NC}"
         exec "$BINARY" "$@"
         ;;
     
-    collector)
-        BINARY="${BUILD_DIR}/src/collector/mbl_collector"
+    data_collector|collector)
+        BINARY="${BUILD_DIR}/examples/mbo_to_mbl/data_collector/data_collector"
         if [ ! -f "$BINARY" ]; then
             echo -e "${RED}Error: Binary not found: ${BINARY}${NC}"
             exit 1
         fi
-        echo -e "${GREEN}Running mbl_collector (${BUILD_TYPE})...${NC}"
+        echo -e "${GREEN}Running data_collector (${BUILD_TYPE})...${NC}"
         exec "$BINARY" "$@"
         ;;
     
@@ -119,9 +119,9 @@ case $COMPONENT in
         echo ""
         
         # Check binaries exist
-        SIMULATOR="${BUILD_DIR}/src/simulator/dbn_simulator"
-        SERVER="${BUILD_DIR}/src/server/mbl_server"
-        COLLECTOR="${BUILD_DIR}/src/collector/mbl_collector"
+        SIMULATOR="${BUILD_DIR}/examples/mbo_to_mbl/feed_simulator/feed_simulator"
+        SERVER="${BUILD_DIR}/examples/mbo_to_mbl/book_server/book_server"
+        COLLECTOR="${BUILD_DIR}/examples/mbo_to_mbl/data_collector/data_collector"
         
         if [ ! -f "$SIMULATOR" ] || [ ! -f "$SERVER" ] || [ ! -f "$COLLECTOR" ]; then
             echo -e "${RED}Error: One or more binaries not found${NC}"
@@ -182,7 +182,7 @@ case $COMPONENT in
     
     *)
         echo -e "${RED}Error: Unknown component: ${COMPONENT}${NC}"
-        echo -e "Valid components: simulator, server, collector, all"
+        echo -e "Valid components: feed_simulator, book_server, data_collector, all"
         show_usage
         exit 1
         ;;

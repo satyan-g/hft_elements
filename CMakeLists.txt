@@ -12,21 +12,26 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -DNDEBUG")
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -O0")
 
+# Static linking for portability and performance
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++")
+# Uncomment for fully static linking (requires static versions of all dependencies)
+# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
+
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
 # Build all static libraries
 add_subdirectory(src/common)
-add_subdirectory(src/dbn)
-add_subdirectory(src/mbo_mbl)
-add_subdirectory(src/snapshot)
-add_subdirectory(src/network)
+add_subdirectory(src/feeds)
+add_subdirectory(src/orderbook)
+add_subdirectory(src/serialization)
+add_subdirectory(src/io)
 add_subdirectory(src/metrics)
 
-# Build executables
-add_subdirectory(src/simulator)
-add_subdirectory(src/server)
-add_subdirectory(src/collector)
+# Build examples
+add_subdirectory(examples/utilities)
+# mbo_to_mbl examples disabled until library implementations are complete
+# add_subdirectory(examples/mbo_to_mbl)
 
 # Tests (optional, enable with -DBUILD_TESTS=ON)
 option(BUILD_TESTS "Build unit tests" OFF)

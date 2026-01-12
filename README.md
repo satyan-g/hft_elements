@@ -1,27 +1,30 @@
-# HFT Elements - MBO to MBL Feed Conversion System
+# HFT Elements - Reusable High-Performance Trading Components
 
-High-performance market data processing system that converts Market-By-Order (MBO) feeds to Market-By-Level (MBL) feeds with JSON snapshot generation.
+A collection of reusable, high-performance libraries for building HFT (High-Frequency Trading) applications. Designed with a library-first approach where components are generic and applications are built by composing these libraries.
 
 ## Architecture
 
-This project follows a **library-first design** with all core functionality implemented as static libraries. Executables are thin wrappers around these libraries.
+### Generic Reusable Libraries
 
-### Libraries
+| Library | Description | Use Cases |
+|---------|-------------|-----------|
+| `libhft_common.a` | Core utilities | NUMA, CPU pinning, timing (RDTSC), memory pools, SeqLock |
+| `libhft_feeds.a` | Feed readers | DBN parsing, rate limiting - extensible to other feed formats |
+| `libhft_orderbook.a` | Order book engine | Lock-free order book maintenance, MBO/MBL aggregation |
+| `libhft_serialization.a` | Data serialization | JSON generation with caching - extensible to other formats |
+| `libhft_io.a` | Network I/O | Epoll-based TCP server/client, non-blocking I/O |
+| `libhft_metrics.a` | Performance metrics | Latency histograms (P95), counters, gauges |
 
-| Library | Description | Key Features |
-|---------|-------------|--------------|
-| `libhft_common.a` | Common utilities | NUMA, CPU pinning, timing (RDTSC), memory pools |
-| `libhft_dbn.a` | DBN file parsing | Memory-mapped file reading, rate limiting |
-| `libhft_mbo_mbl.a` | Order book engine | Lock-free MBO→MBL conversion with SeqLock |
-| `libhft_snapshot.a` | JSON snapshot generator | Incremental JSON building with caching |
-| `libhft_network.a` | TCP networking | Epoll-based server/client, non-blocking I/O |
-| `libhft_metrics.a` | Metrics collection | Histograms (P95), counters, gauges |
+### Example Applications
 
-### Executables
+**Utilities** (`examples/utilities/`):
+- **`hft_host_diag`**: HFT host configuration diagnostic tool
+- **`dbncat`**: DBN file parser and JSON converter (uses Databento C++ library)
 
-- **`dbn_simulator`**: Replays DBN files over TCP with configurable rate limiting
-- **`mbl_server`**: Converts MBO feed to MBL snapshots and serves over TCP
-- **`mbl_collector`**: Connects to server and saves snapshots to disk
+**MBO to MBL Converter** (`examples/mbo_to_mbl/`):
+- **`feed_simulator`**: Replays DBN files over TCP
+- **`book_server`**: Maintains order books and serves JSON snapshots
+- **`data_collector`**: Collects and saves snapshots to disk
 
 ## Design Principles
 
@@ -80,38 +83,38 @@ ctest --output-on-failure
 ### Quick Run (Recommended)
 
 ```bash
-# Run individual components
-./scripts/run.sh simulator --file data/sample.dbn --port 9550
-./scripts/run.sh server --mbo-host localhost --mbo-port 9550
-./scripts/run.sh collector --host localhost --port 9551
+# Run individual components (MBO to MBL example)
+./scripts/run.sh feed_simulator --file data/sample.dbn --port 9550
+./scripts/run.sh book_server --mbo-host localhost --mbo-port 9550
+./scripts/run.sh data_collector --host localhost --port 9551
 
 # Run all components together
 ./scripts/run.sh all
 
 # Run debug build
-./scripts/run.sh debug simulator --help
+./scripts/run.sh debug feed_simulator --help
 ```
 
 ### Manual Run
 
-### 1. DBN Simulator
+### 1. Feed Simulator
 
 Replay DBN file over TCP:
 
 ```bash
-./build/release/src/simulator/dbn_simulator \
+./build/release/examples/mbo_to_mbl/feed_simulator/feed_simulator \
   --file data/sample.dbn \
   --port 9550 \
   --rate 100000 \
   --core 0
 ```
 
-### 2. MBL Server
+### 2. Book Server
 
 Convert MBO to MBL and serve snapshots:
 
 ```bash
-./build/release/src/server/mbl_server \
+./build/release/examples/mbo_to_mbl/book_server/book_server \
   --mbo-host localhost \
   --mbo-port 9550 \
   --snapshot-port 9551 \
@@ -120,12 +123,12 @@ Convert MBO to MBL and serve snapshots:
   --server-core 3
 ```
 
-### 3. Collector
+### 3. Data Collector
 
 Receive and save snapshots:
 
 ```bash
-./build/release/src/collector/mbl_collector \
+./build/release/examples/mbo_to_mbl/data_collector/data_collector \
   --host localhost \
   --port 9551 \
   --output ./snapshots \
@@ -133,12 +136,23 @@ Receive and save snapshots:
   --compress
 ```
 
-## Performance Targets
+## Design Philosophy
 
-- **P95 hop-hop latency**: < 5µs (MBO event → MBL update)
-- **P95 end-to-end latency**: < 50µs (MBO event → client receives snapshot)
-- **Throughput**: > 1M events/sec
-- **Concurrent clients**: 10+ with no degradation
+- **Library-first**: Generic, reusable components, not tied to specific applications
+- **Static linking**: C++ runtime statically linked for portability and performance
+- **Zero-cost abstractions**: Templates instead of virtual functions
+- **Lock-free/wait-free**: SeqLock for synchronization, no mutexes in hot path
+- **Cache-optimized**: 64-byte alignment, false sharing prevention
+- **Type-safe**: Strong type aliases, no primitive types in interfaces
+- **NUMA-aware**: CPU pinning, local memory allocation
+
+### Static Linking Benefits
+
+Binaries built with GCC 14 in Docker run on Ubuntu 22.04+ hosts without requiring newer libstdc++:
+- ✅ No dynamic linking overhead (PLT/GOT indirection)
+- ✅ Better compiler optimizations (whole program optimization)
+- ✅ Portable binaries across Linux distributions
+- ✅ See `docs/STATIC_LINKING.md` for details
 
 ## Project Structure
 
@@ -157,24 +171,25 @@ hft_elements/
 ├── scripts/                    # Build and run scripts
 │   ├── build.sh                # Build automation
 │   └── run.sh                  # Run automation
-├── include/
-│   └── hft_elements/           # Public headers
-│       ├── common/             # Common utilities (includes SeqLock)
-│       ├── dbn/                # DBN parser
-│       ├── mbo_mbl/            # Order book engine
-│       ├── snapshot/           # Snapshot generator
-│       ├── network/            # TCP networking
-│       └── metrics/            # Metrics collection
-├── src/
-│   ├── common/                 # libhft_common implementation
-│   ├── dbn/                    # libhft_dbn implementation
-│   ├── mbo_mbl/                # libhft_mbo_mbl implementation
-│   ├── snapshot/               # libhft_snapshot implementation
-│   ├── network/                # libhft_network implementation
-│   ├── metrics/                # libhft_metrics implementation
-│   ├── simulator/              # dbn_simulator executable
-│   ├── server/                 # mbl_server executable
-│   └── collector/              # mbl_collector executable
+├── include/hft_elements/       # Public library headers
+│   ├── common/                 # Core utilities, NUMA, timing, SeqLock
+│   ├── feeds/                  # Feed readers (DBN, etc.)
+│   ├── orderbook/              # Generic order book
+│   ├── serialization/          # JSON and other serializers
+│   ├── io/                     # Network I/O (TCP, epoll)
+│   └── metrics/                # Performance metrics
+├── src/                        # Library implementations
+│   ├── common/                 # libhft_common.a
+│   ├── feeds/                  # libhft_feeds.a
+│   ├── orderbook/              # libhft_orderbook.a
+│   ├── serialization/          # libhft_serialization.a
+│   ├── io/                     # libhft_io.a
+│   └── metrics/                # libhft_metrics.a
+├── examples/                   # Example applications
+│   └── mbo_to_mbl/             # MBO-to-MBL converter example
+│       ├── feed_simulator/     # Feed replay
+│       ├── book_server/        # Order book server
+│       └── data_collector/     # Data collection client
 ├── tests/                      # Unit and integration tests
 ├── docker/                     # Docker build/runtime images
 └── data/                       # Sample data files

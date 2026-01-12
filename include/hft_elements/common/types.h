@@ -2,6 +2,7 @@
 #define HFT_ELEMENTS_COMMON_TYPES_H
 
 #include <cstdint>
+#include <cstddef>
 
 namespace hft_elements {
 namespace common {
@@ -44,4 +45,5 @@ constexpr size_t CACHE_LINE_SIZE = 64;
 } // namespace hft_elements
 
 #endif
+
 

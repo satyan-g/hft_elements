@@ -354,9 +354,34 @@ add_library(hft_common SHARED ${SOURCES})
 ✅ **REQUIRED:**
 ```cmake
 add_library(hft_common STATIC ${SOURCES})
+
+# Executables must statically link C++ runtime
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++")
 ```
 
-**Rationale:** Dynamic linking adds PLT/GOT indirection overhead. Static linking enables whole-program optimization.
+**Rationale:** 
+- Dynamic linking adds PLT/GOT indirection overhead (indirect jumps, cache misses)
+- Static linking enables whole-program optimization and better inlining
+- Static C++ runtime linking ensures binaries are portable across systems (GCC 14 binary runs on GCC 11 system)
+- No dependency on host system's libstdc++ version
+- Faster startup - no dynamic linker resolution
+- Better cache locality - all code in one place
+
+**What is statically linked:**
+- ✅ All project libraries (libhft_*.a)
+- ✅ libgcc (GCC runtime)
+- ✅ libstdc++ (C++ standard library)
+
+**What remains dynamically linked (intentionally):**
+- glibc (system C library - must match host)
+- libnuma (NUMA support)
+- pthread (POSIX threads)
+
+**Verification:**
+```bash
+# Binary should NOT list libstdc++.so.6
+ldd ./build/release/examples/utilities/catdbn/catdbn
+```
 
 ### 14. Measure, Don't Guess - Use Metrics
 **Always add metrics for hot paths**
@@ -426,4 +451,5 @@ Before submitting code, verify:
 - `docs/ARCHITECTURE.md` - System architecture and threading model
 - `docs/PLAN.md` - Implementation plan and design principles
 - `docs/QUICKREF.md` - Quick reference cheat sheet
+- `docs/STATIC_LINKING.md` - Static linking guide and rationale
 

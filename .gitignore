@@ -7,6 +7,12 @@ cmake-build-*/
 *.dylib
 
 # Executables
+hft_host_diag
+dbncat
+feed_simulator
+book_server
+data_collector
+# Legacy names (just in case)
 dbn_simulator
 mbl_server
 mbl_collector
